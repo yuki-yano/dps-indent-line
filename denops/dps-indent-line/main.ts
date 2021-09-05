@@ -9,7 +9,6 @@ let indentWidth: number;
 let pos: Pos;
 let startLine: number;
 let endLine: number;
-let extmarkIds: Array<number | undefined> = [];
 
 type Line = {
   text: string;
@@ -23,6 +22,8 @@ type Pos = {
   lineNumber: number;
   col: number;
 };
+
+type Extmark = [number, number, number, { virt_text: Array<[string, string]> }];
 
 const getNamespace = async (denops: Denops): Promise<number> => {
   if (namespace == null) {
@@ -59,6 +60,7 @@ const getStartOfLine = (lines: Array<Line>, index: number): number => {
     line = lines[i];
     if (line.text !== "") {
       startLine = lines[i];
+
       break;
     }
     i--;
@@ -69,6 +71,7 @@ const getStartOfLine = (lines: Array<Line>, index: number): number => {
     line = lines[i];
     if (line.text !== "") {
       endLine = lines[i];
+
       break;
     }
     i++;
@@ -97,6 +100,7 @@ const getIsContext = (
 
     if (line.text === "") {
       i--;
+
       continue;
     }
 
@@ -106,6 +110,7 @@ const getIsContext = (
       i--;
     } else {
       startLine = lines[i].lineNumber;
+
       break;
     }
   }
@@ -118,6 +123,7 @@ const getIsContext = (
 
     if (line.text === "") {
       i++;
+
       continue;
     }
 
@@ -127,6 +133,7 @@ const getIsContext = (
       i++;
     } else {
       endLine = lines[i].lineNumber;
+
       break;
     }
   }
@@ -159,9 +166,7 @@ const getLines = async (denops: Denops): Promise<ReadonlyArray<Line>> => {
     "getline",
     startLine,
     endLine,
-  ) as ReadonlyArray<
-    string
-  >;
+  ) as ReadonlyArray<string>;
 
   let lines: Array<Line> = [];
   for (const [index, text] of bufferLines.entries()) {
@@ -176,6 +181,7 @@ const getLines = async (denops: Denops): Promise<ReadonlyArray<Line>> => {
         spaces: 0,
         isContext: false,
       }];
+
       continue;
     }
 
@@ -188,6 +194,7 @@ const getLines = async (denops: Denops): Promise<ReadonlyArray<Line>> => {
         spaces: 0,
         isContext: false,
       }];
+
       continue;
     }
 
@@ -209,6 +216,7 @@ const getLines = async (denops: Denops): Promise<ReadonlyArray<Line>> => {
       while (lines[i] != null) {
         if (lines[i].text !== "") {
           prevIndent = lines[i].indent;
+
           break;
         }
         i--;
@@ -219,6 +227,7 @@ const getLines = async (denops: Denops): Promise<ReadonlyArray<Line>> => {
       while (lines[i] != null) {
         if (lines[i].text !== "") {
           nextIndent = lines[i].indent;
+
           break;
         }
         i++;
@@ -244,19 +253,26 @@ const getLines = async (denops: Denops): Promise<ReadonlyArray<Line>> => {
 };
 
 const renderIndent = async (denops: Denops, lines: ReadonlyArray<Line>) => {
-  await Promise.all(extmarkIds.map(async (_) => {
-    await denops.call(
-      "nvim_buf_clear_namespace",
-      0,
-      await getNamespace(denops),
-      0,
-      -1,
-    );
-    // if (id != null) {
-    //   denops.call("nvim_buf_del_extmark", 0, await getNamespace(denops), id);
-    // }
+  const oldExtmarks = await denops.call(
+    "nvim_buf_get_extmarks",
+    0,
+    await getNamespace(denops),
+    0,
+    -1,
+    { details: true },
+  ) as Array<Extmark>;
+
+  await Promise.all(oldExtmarks.map(async (oldMark) => {
+    const matchMark = lines.find((line) => (line.lineNumber === oldMark[1]));
+    if (matchMark == null) {
+      await denops.call(
+        "nvim_buf_del_extmark",
+        0,
+        await getNamespace(denops),
+        oldMark[0],
+      );
+    }
   }));
-  extmarkIds = [];
 
   Promise.all(
     lines.map(async ({ indent, isContext }, i) => {
@@ -278,6 +294,28 @@ const renderIndent = async (denops: Denops, lines: ReadonlyArray<Line>) => {
         ]];
       }
 
+      const oldExtmark = oldExtmarks.find((oldMark) => {
+        return oldMark[1] === lineNumber;
+      });
+
+      if (oldExtmark != null) {
+        for (const [i, v] of virtText.entries()) {
+          if (
+            v[0] !== oldExtmark[3]["virt_text"][i][0] ||
+            v[1] !== oldExtmark[3]["virt_text"][i][1]
+          ) {
+            await denops.call(
+              "nvim_buf_del_extmark",
+              0,
+              await getNamespace(denops),
+              oldExtmark[0],
+            );
+
+            break;
+          }
+        }
+      }
+
       return await denops.call(
         "nvim_buf_set_extmark",
         0,
@@ -291,9 +329,7 @@ const renderIndent = async (denops: Denops, lines: ReadonlyArray<Line>) => {
         },
       ) as number;
     }),
-  ).then((result) => {
-    extmarkIds = result;
-  });
+  );
 };
 
 export const main = async (denops: Denops): Promise<void> => {
@@ -316,7 +352,6 @@ export const main = async (denops: Denops): Promise<void> => {
     helper.define("BufEnter", "*", "RenderIndent");
     helper.define("InsertChange", "*", "RenderIndent");
     helper.define("TextChanged", "*", "RenderIndent");
-    helper.define("TextChangedI", "*", "RenderIndent");
-    // helper.define("WinScrolled", "*", "RenderIndent");
+    helper.define("User", "DenopsReady", "RenderIndent");
   });
 };
